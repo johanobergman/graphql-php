@@ -50,6 +50,13 @@ class Executor
     private static $defaultResolveFn = [__CLASS__, 'defaultResolveFn'];
 
     /**
+     * Array that holds various cached values.
+     * 
+     * @var array
+     */
+    private static $memoized = [];
+
+    /**
      * Custom default resolve function
      *
      * @param $fn
@@ -151,6 +158,8 @@ class Executor
         } else {
             $result = self::executeFields($exeContext, $type, [$rootValue], $fields);
         }
+
+        // dd(self::$memoized);
 
         return null === $result || $result === [] ? [] : $result[0];
     }
@@ -373,38 +382,58 @@ class Executor
     private static function resolveField(ExecutionContext $exeContext, ObjectType $parentType, $sourceValueList, $fieldASTs, $responseName, &$resolveResult)
     {
         $fieldAST = $fieldASTs[0];
-        $fieldName = $fieldAST->name->value;
 
-        $fieldDef = self::getFieldDef($exeContext->schema, $parentType, $fieldName);
+        $uid = self::getUid($fieldAST);
 
-        if (!$fieldDef) {
-            return ;
+        // Get memoized variables if they exist
+        if (isset(self::$memoized['resolveField'][$uid])) {
+            $memoized = self::$memoized['resolveField'][$uid];
+            $fieldDef = $memoized['fieldDef'];
+            $returnType = $fieldDef->getType();
+            $args = $memoized['args'];
+            $info = $memoized['info'];
+            self::$memoized['resolveField'][$uid]['count']++;
         }
+        else {
+            $fieldName = $fieldAST->name->value;
 
-        $returnType = $fieldDef->getType();
+            $fieldDef = self::getFieldDef($exeContext->schema, $parentType, $fieldName);
 
-        // Build hash of arguments from the field.arguments AST, using the
-        // variables scope to fulfill any variable references.
-        // TODO: find a way to memoize, in case this field is within a List type.
-        $args = Values::getArgumentValues(
-            $fieldDef->args,
-            $fieldAST->arguments,
-            $exeContext->variableValues
-        );
+            if (!$fieldDef) {
+                return ;
+            }
 
-        // The resolve function's optional third argument is a collection of
-        // information about the current execution state.
-        $info = new ResolveInfo([
-            'fieldName' => $fieldName,
-            'fieldASTs' => $fieldASTs,
-            'returnType' => $returnType,
-            'parentType' => $parentType,
-            'schema' => $exeContext->schema,
-            'fragments' => $exeContext->fragments,
-            'rootValue' => $exeContext->rootValue,
-            'operation' => $exeContext->operation,
-            'variableValues' => $exeContext->variableValues,
-        ]);
+            $returnType = $fieldDef->getType();
+
+            // Build hash of arguments from the field.arguments AST, using the
+            // variables scope to fulfill any variable references.
+            $args = Values::getArgumentValues(
+                $fieldDef->args,
+                $fieldAST->arguments,
+                $exeContext->variableValues
+            );
+
+            // The resolve function's optional third argument is a collection of
+            // information about the current execution state.
+            $info = new ResolveInfo([
+                'fieldName' => $fieldName,
+                'fieldASTs' => $fieldASTs,
+                'returnType' => $returnType,
+                'parentType' => $parentType,
+                'schema' => $exeContext->schema,
+                'fragments' => $exeContext->fragments,
+                'rootValue' => $exeContext->rootValue,
+                'operation' => $exeContext->operation,
+                'variableValues' => $exeContext->variableValues,
+            ]);
+
+            self::$memoized['resolveField'][$uid] = [
+                'fieldDef' => $fieldDef,
+                'args' => $args,
+                'info' => $info,
+                'count' => 0
+            ];
+        }
 
         $mapFn = $fieldDef->mapFn;
 
@@ -696,15 +725,24 @@ class Executor
         $subFieldASTs = new \ArrayObject();
         $visitedFragmentNames = new \ArrayObject();
         for ($i = 0; $i < count($fieldASTs); $i++) {
-            $selectionSet = $fieldASTs[$i]->selectionSet;
-            if ($selectionSet) {
-                $subFieldASTs = self::collectFields(
-                    $exeContext,
-                    $objectType,
-                    $selectionSet,
-                    $subFieldASTs,
-                    $visitedFragmentNames
-                );
+
+            // Get memoized value if it exists
+            $uid = self::getUid($fieldASTs[$i]);
+            if (isset(self::$memoized['collectSubFields'][$uid])) {
+                $subFieldASTs = self::$memoized['collectSubFields'][$uid]['subFieldASTs'];
+            }
+            else {
+                $selectionSet = $fieldASTs[$i]->selectionSet;
+                if ($selectionSet) {
+                    $subFieldASTs = self::collectFields(
+                        $exeContext,
+                        $objectType,
+                        $selectionSet,
+                        $subFieldASTs,
+                        $visitedFragmentNames
+                    );
+                    self::$memoized['collectSubFields'][$uid]['subFieldASTs'] = $subFieldASTs;
+                }
             }
         }
         return $subFieldASTs;
@@ -718,17 +756,14 @@ class Executor
      */
     public static function defaultResolveFn($source, $args, ResolveInfo $info)
     {
-        $fieldName = $info->fieldName;
         $property = null;
+        $fieldName = $info->fieldName;
 
-        if (is_array($source) || $source instanceof \ArrayAccess) {
-            if (isset($source[$fieldName])) {
-                $property = $source[$fieldName];
-            }
-        } else if (is_object($source)) {
-            if (isset($source->{$fieldName})) {
-                $property = $source->{$fieldName};
-            }
+        if (isset($source->$fieldName)) {
+            $property = $source->$fieldName;
+        }
+        else if (isset($source[$fieldName])) {
+            $property = $source[$fieldName];
         }
 
         return $property instanceof \Closure ? $property($source) : $property;
@@ -762,4 +797,15 @@ class Executor
         $tmp = $parentType->getFields();
         return isset($tmp[$fieldName]) ? $tmp[$fieldName] : null;
     }
+
+    /**
+     * Get an unique identifier for a FieldAST.
+     * 
+     * @param  object $fieldAST
+     * @return string
+     */
+    private static function getUid($fieldAST) {
+        return $fieldAST->loc->start . '-' . $fieldAST->loc->end;
+    }
+
 }
