@@ -51,7 +51,7 @@ class Executor
 
     /**
      * Array that holds various cached values.
-     * 
+     *
      * @var array
      */
     private static $memoized = [];
@@ -158,8 +158,6 @@ class Executor
         } else {
             $result = self::executeFields($exeContext, $type, [$rootValue], $fields);
         }
-
-        // dd(self::$memoized);
 
         return null === $result || $result === [] ? [] : $result[0];
     }
@@ -392,7 +390,6 @@ class Executor
             $returnType = $fieldDef->getType();
             $args = $memoized['args'];
             $info = $memoized['info'];
-            self::$memoized['resolveField'][$uid]['count']++;
         }
         else {
             $fieldName = $fieldAST->name->value;
@@ -431,7 +428,6 @@ class Executor
                 'fieldDef' => $fieldDef,
                 'args' => $args,
                 'info' => $info,
-                'count' => 0
             ];
         }
 
@@ -803,7 +799,7 @@ class Executor
 
     /**
      * Get an unique identifier for a FieldAST.
-     * 
+     *
      * @param  object $fieldAST
      * @return string
      */
