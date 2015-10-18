@@ -428,6 +428,7 @@ class Executor
                 'fieldDef' => $fieldDef,
                 'args' => $args,
                 'info' => $info,
+                'results' => new \SplObjectStorage
             ];
         }
 
@@ -477,26 +478,40 @@ class Executor
             }
 
             foreach ($sourceValueList as $index => $value) {
-                try {
-                    $resolved = call_user_func($resolveFn, $value, $args, $info);
-                } catch (\Exception $error) {
-                    $reportedError = Error::createLocatedError($error, $fieldASTs);
+                // If FieldAST uid and parent object are both the same as in a previous run,
+                // use its result instead to prevent unnecessary work. Works for objects only.
+                $isObject = is_object($value);
+                if ($isObject && isset(self::$memoized['resolveField'][$uid]['results'][$value])) {
+                    $result = self::$memoized['resolveField'][$uid]['results'][$value];
+                }
+                else {
+                    try {
+                        $resolved = call_user_func($resolveFn, $value, $args, $info);
+                    } catch (\Exception $error) {
+                        $reportedError = Error::createLocatedError($error, $fieldASTs);
 
-                    if ($returnType instanceof NonNull) {
-                        throw $reportedError;
+                        if ($returnType instanceof NonNull) {
+                            throw $reportedError;
+                        }
+
+                        $exeContext->addError($reportedError);
+                        $resolved = null;
                     }
 
-                    $exeContext->addError($reportedError);
-                    $resolved = null;
+                    $result = self::completeValueCatchingError(
+                        $exeContext,
+                        $returnType,
+                        $fieldASTs,
+                        $info,
+                        $resolved
+                    );
+
+                    if ($isObject) {
+                        self::$memoized['resolveField'][$uid]['results'][$value] = $result;
+                    }
                 }
 
-                $resolveResult[$index][$responseName] = self::completeValueCatchingError(
-                    $exeContext,
-                    $returnType,
-                    $fieldASTs,
-                    $info,
-                    $resolved
-                );
+                $resolveResult[$index][$responseName] = $result;
             }
         }
     }
